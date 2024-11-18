@@ -90,7 +90,7 @@ for chunk in chunks:
     if "Table" in str(type(chunk)):
         tables.append(chunk)
 
-    if "CompositeElement" in str(type((chunk))):
+    if "CompositeElement" in str(type(chunk)):
         texts.append(chunk)
 
 images = get_images_base64(chunks)

@@ -1,0 +1,103 @@
+Prompts for LDS Metadata
+To design an effective prompt system for querying the `WL_DATA_CONCEPT` table in the lending domain, we’ll create **two interconnected prompts** that leverage natural language processing (NLP), structured data retrieval, and LLM-generated summaries. Below is the optimized framework:
+
+---
+
+### **Prompt System Design**
+
+#### **1. Query Interpretation & Data Retrieval Prompt**
+**Purpose**: Parse the natural language query, identify key terms, and retrieve relevant entries from `WL_DATA_CONCEPT`.  
+**Prompt Template**:
+```
+You are a data concept expert for the lending domain in the WL_APP schema. Your task is to:
+1. Analyze the user's query and extract key terms related to lending data concepts (e.g., "loan applications," "collateral," "credit scoring").
+2. Map these terms to the closest matching entries in the WL_DATA_CONCEPT table (columns: table_name, description).
+3. Return a JSON list of relevant table names and their descriptions.
+
+**User Query**: "{user_query}"
+
+**Instructions**:
+- Prioritize tables where the description directly addresses the user's intent.
+- If no direct match exists, suggest tables with related concepts (e.g., "credit risk" for "loan default prediction").
+- Do not invent new concepts; use only the existing WL_DATA_CONCEPT entries.
+
+**Output Format**:
+{
+  "query_keywords": ["keyword1", "keyword2"],
+  "matched_concepts": [
+    {"table_name": "TABLE_A", "description": "..."},
+    {"table_name": "TABLE_B", "description": "..."}
+  ]
+}
+```
+
+---
+
+#### **2. Summary & Insight Generation Prompt**
+**Purpose**: Generate a user-friendly summary and insights using the retrieved data.  
+**Prompt Template**:
+```
+You are a lending domain analyst. Use the provided data concepts from the WL_DATA_CONCEPT table to:
+1. Summarize how these concepts address the user's query.
+2. Add contextual insights about their role in lending workflows (e.g., "TABLE_X is critical for risk assessment").
+3. Format the response clearly for non-technical users.
+
+**User Query**: "{user_query}"  
+**Matched Concepts**:  
+{table_name: "TABLE_A", description: "..."},  
+{table_name: "TABLE_B", description: "..."}
+
+**Instructions**:
+- Use bullet points for clarity.
+- Highlight connections between concepts (e.g., "TABLE_A feeds data into TABLE_B").
+- Keep technical jargon minimal but retain domain specificity (e.g., "APR" instead of "Annual Percentage Rate").
+
+**Output Format**:
+### Summary of Results for "{user_query}"
+**Key Concepts**:  
+- **TABLE_A**: [Description + LLM-generated insight, e.g., "Tracks loan applicant demographics; used to assess eligibility."]  
+- **TABLE_B**: [Description + LLM-generated insight, e.g., "Stores collateral details; ensures loan security."]
+
+**Insights**:  
+- [LLM-generated analysis, e.g., "These tables are foundational for credit risk modeling."]
+```
+
+---
+
+### **Example Workflow**
+**User Query**:  
+> "What data concepts are used to evaluate loan default risks?"
+
+**Step 1**:  
+- The **Query Interpretation Prompt** identifies keywords: `["loan default", "risk evaluation"]`.  
+- Retrieves tables like `CREDIT_SCORING`, `LOAN_HISTORY`, and `COLLATERAL_DETAILS` from `WL_DATA_CONCEPT`.
+
+**Step 2**:  
+- The **Summary Prompt** generates:  
+```
+### Summary of Results for "loan default risks"
+**Key Concepts**:  
+- **CREDIT_SCORING**: "Tracks borrower credit scores; predicts likelihood of default based on historical data."  
+- **LOAN_HISTORY**: "Stores past loan repayment behavior; identifies patterns in delinquencies."  
+
+**Insights**:  
+- These tables feed into risk models to flag high-risk applicants.  
+- Combining credit scores and repayment history improves default prediction accuracy by 20%.
+```
+
+---
+
+### **Key Features**
+1. **Domain-Specific Filtering**: Ensures only lending-related concepts from `WL_DATA_CONCEPT` are used.  
+2. **Hybrid Output**: Combines existing descriptions (for accuracy) with LLM insights (for clarity).  
+3. **User-Centric Formatting**: Bullet points and plain language cater to both technical and non-technical users.  
+4. **Error Handling**: Explicit instructions to avoid hallucinating new concepts.
+
+---
+
+### **Implementation Notes**
+- Use **LangChain** or **LlamaIndex** to automate the retrieval-augmented generation (RAG) pipeline.  
+- Store `WL_DATA_CONCEPT` in a vector database (e.g., Pinecone) for efficient semantic search.  
+- Fine-tune the prompts with lending-specific examples (e.g., "mortgage underwriting") to improve accuracy.
+
+This system ensures users get precise, actionable answers while leveraging the full context of the lending domain.

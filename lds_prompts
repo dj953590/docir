@@ -256,3 +256,165 @@ print(response)
   - You prioritize simplicity over scalability.
   - Descriptions are concise and unlikely to change.
 - Otherwise, stick with the **original retrieval-augmented flow** for better scalability and accuracy.
+
+Here's a Python implementation that integrates with the HDB class, retrieves WL_DATA_CONCEPT data, constructs prompts, and processes natural language queries:
+
+```python
+from hdb import HDB  # Assuming HDB provides database connection
+from typing import List, Dict
+import json
+
+class ConceptQueryProcessor:
+    def __init__(self):
+        self.hdb_connection = HDB().get_connection()
+        self.concept_data = self._load_concept_data()
+    
+    def _load_concept_data(self) -> List[Dict]:
+        """Fetch and format WL_DATA_CONCEPT table data"""
+        query = """
+            SELECT "Concept Name", "Table Name", "Description"
+            FROM WL_APP.WL_DATA_CONCEPT
+        """
+        
+        with self.hdb_connection.cursor() as cursor:
+            cursor.execute(query)
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def _build_prompt(self, user_query: str) -> str:
+        """Construct LLM prompt with concept data"""
+        concept_entries = "\n".join(
+            f'Concept: {row["Concept Name"]} | Table: {row["Table Name"]} | Description: {row["Description"]}'
+            for row in self.concept_data
+        )
+        
+        return f"""
+        You are a lending domain data expert. Use the following concepts to answer the query:
+        {concept_entries}
+        
+        Query: {user_query}
+        
+        Format response as:
+        {{
+            "summary": "concise summary of how concepts address the query",
+            "matched_concepts": [
+                {{
+                    "concept": "Concept Name",
+                    "table": "Table Name",
+                    "description": "Original Description",
+                    "relevance": "LLM-generated relevance explanation"
+                }}
+            ]
+        }}
+        """
+    
+    def process_query(self, user_query: str) -> dict:
+        """Execute full query processing pipeline"""
+        if not self.concept_data:
+            raise ValueError("No concept data loaded")
+            
+        prompt = self._build_prompt(user_query)
+        llm_response = self._query_llm(prompt)
+        return self._parse_response(llm_response)
+    
+    def _query_llm(self, prompt: str) -> str:
+        """Execute LLM query (mock implementation)"""
+        # Replace with actual LLM API call
+        # Example using OpenAI:
+        from openai import OpenAI
+        client = OpenAI()
+        
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content
+    
+    def _parse_response(self, response: str) -> dict:
+        """Parse and validate LLM response"""
+        try:
+            data = json.loads(response)
+            # Add validation checks here
+            return data
+        except json.JSONDecodeError:
+            return {"error": "Failed to parse LLM response"}
+
+# Example usage
+if __name__ == "__main__":
+    processor = ConceptQueryProcessor()
+    
+    user_query = "Which concepts track loan application status and risk assessment?"
+    result = processor.process_query(user_query)
+    
+    print("Summary:", result.get("summary"))
+    print("\nMatched Concepts:")
+    for concept in result.get("matched_concepts", []):
+        print(f"• {concept['concept']} ({concept['table']})")
+        print(f"  Relevance: {concept['relevance']}")
+        print(f"  Description: {concept['description']}\n")
+```
+
+### Key Components:
+
+1. **HDB Integration**:
+```python
+self.hdb_connection = HDB().get_connection()
+with self.hdb_connection.cursor() as cursor:
+    cursor.execute(query)
+```
+
+2. **Prompt Construction**:
+```python
+concept_entries = "\n".join(
+    f'Concept: {row["Concept Name"]} | Table: {row["Table Name"]} | Description: {row["Description"]}'
+    for row in self.concept_data
+)
+```
+
+3. **Response Format**:
+```json
+{
+    "summary": "...",
+    "matched_concepts": [
+        {
+            "concept": "Loan Applications",
+            "table": "LOAN_APP",
+            "description": "Tracks loan application lifecycle",
+            "relevance": "Directly tracks application status changes"
+        }
+    ]
+}
+```
+
+### Features:
+1. **Automatic Data Loading**: Fetches latest concept data on initialization
+2. **Structured Output**: Enforces consistent JSON response format
+3. **Context Preservation**: Maintains original descriptions while adding LLM insights
+4. **Error Handling**: Gracefully handles empty data and parsing errors
+
+### Example Output:
+```
+Summary: Loan application tracking and risk assessment are covered by these core concepts
+
+Matched Concepts:
+• Loan Applications (LOAN_APP)
+  Relevance: Directly tracks application status changes
+  Description: Tracks loan application lifecycle from submission to decision
+
+• Credit Risk Model (CREDIT_RISK)
+  Relevance: Provides risk scoring for applicant evaluation
+  Description: Machine learning model for default probability prediction
+```
+
+### To Improve:
+1. Add pagination if WL_DATA_CONCEPT exceeds LLM context limits
+2. Implement result caching for frequent queries
+3. Add schema validation for LLM responses
+4. Include fallback mechanisms for failed LLM responses
+
+Let me know if you need modifications for:
+1. Specific HDB connection parameters
+2. Different LLM providers
+3. Additional data validation rules
+4. Performance optimizations for large datasets

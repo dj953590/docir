@@ -418,3 +418,196 @@ Let me know if you need modifications for:
 2. Different LLM providers
 3. Additional data validation rules
 4. Performance optimizations for large datasets
+
+Here's an enhanced version of the `HDB` class using Pydantic's `BaseModel` for validation and configuration management:
+
+```python
+from pydantic import BaseModel, Field, validator, PrivateAttr
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import sessionmaker, scoped_session
+from typing import Optional, Generator
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class DBConfig(BaseModel):
+    """Pydantic model for database connection configuration"""
+    username: str = Field(..., description="Database username")
+    password: str = Field(..., description="Database password")
+    host: str = Field("localhost", description="Database host")
+    port: str = Field("1521", description="Database port")
+    service_name: str = Field(..., description="Oracle service name")
+    schema_name: str = Field(..., alias="schema", description="Target schema name")
+
+    @validator('schema_name', pre=True)
+    def uppercase_schema(cls, v):
+        """Ensure schema name is uppercase"""
+        return v.upper()
+
+class HDB(BaseModel):
+    """Database handler with schema management using Pydantic"""
+    config: DBConfig
+    _engine: Optional[create_engine] = PrivateAttr(None)
+    _session_factory: Optional[sessionmaker] = PrivateAttr(None)
+
+    class Config:
+        arbitrary_types_allowed = True
+        underscore_attrs_are_private = True
+
+    def connect(self) -> None:
+        """Establish database connection with schema configuration"""
+        conn_str = (
+            f"oracle+cx_oracle://{self.config.username}:{self.config.password}"
+            f"@{self.config.host}:{self.config.port}/?service_name={self.config.service_name}"
+        )
+
+        self._engine = create_engine(
+            conn_str,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            echo=False
+        )
+
+        # Set default schema for all connections
+        @event.listens_for(self._engine, "connect", insert=True)
+        def set_current_schema(dbapi_connection, connection_record):
+            with dbapi_connection.cursor() as cursor:
+                cursor.execute(f"ALTER SESSION SET CURRENT_SCHEMA = {self.config.schema_name}")
+            logger.info(f"Set schema to {self.config.schema_name}")
+
+        self._session_factory = scoped_session(
+            sessionmaker(
+                bind=self._engine,
+                autocommit=False,
+                autoflush=False
+            )
+        )
+
+    def get_session(self) -> Generator:
+        """Get a thread-safe database session"""
+        if not self._session_factory:
+            raise ConnectionError("Database not connected. Call connect() first")
+        
+        session = self._session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Session rollback due to error: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+    def check_connection(self) -> bool:
+        """Verify schema connection"""
+        try:
+            with self._engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+                )
+                current_schema = result.scalar()
+                logger.info(f"Current schema: {current_schema}")
+                return current_schema == self.config.schema_name
+        except Exception as e:
+            logger.error(f"Connection check failed: {str(e)}")
+            return False
+
+    @property
+    def is_connected(self) -> bool:
+        """Connection status check"""
+        return self._engine is not None and self.check_connection()
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+
+    def disconnect(self) -> None:
+        """Clean up database connections"""
+        if self._engine:
+            self._engine.dispose()
+            logger.info("Database connection pool closed")
+
+# Usage Example ###########################################################
+if __name__ == "__main__":
+    # Initialize with validated configuration
+    db_config = DBConfig(
+        username="app_user",
+        password="secure_password",
+        service_name="ORCL",
+        schema="wl_app"  # Will be converted to WL_APP
+    )
+
+    with HDB(config=db_config) as hdb:
+        # Check connection status
+        if not hdb.is_connected:
+            raise RuntimeError("Failed to connect to database")
+        
+        # Execute query using context manager
+        with hdb.get_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT "Concept Name", "Table Name", "Description"
+                    FROM WL_DATA_CONCEPT
+                """)
+            )
+            
+            concepts = [dict(row) for row in result]
+            print(f"Found {len(concepts)} data concepts in schema {db_config.schema_name}")
+```
+
+### Key Improvements:
+1. **Pydantic Validation**:
+   - Schema name auto-conversion to uppercase
+   - Type checking for all connection parameters
+   - Config validation using `@validator` decorator
+
+2. **Connection Management**:
+   - Context manager support (`with` statements)
+   - Connection pooling with SQLAlchemy
+   - Automatic schema setting on connect
+
+3. **Error Handling**:
+   - Session rollback on errors
+   - Connection health checks
+   - Proper connection cleanup
+
+4. **Additional Features**:
+   - Thread-safe scoped sessions
+   - Connection pool configuration
+   - Logging integration
+   - Type hints throughout
+
+### Usage Pattern:
+```python
+# 1. Create validated configuration
+config = DBConfig(
+    username="user",
+    password="pass",
+    service_name="ORCL",
+    schema="wl_app"
+)
+
+# 2. Initialize and connect
+hdb = HDB(config=config)
+hdb.connect()
+
+# 3. Execute queries
+with hdb.get_session() as session:
+    session.execute(text("..."))
+```
+
+This implementation ensures:
+- Strong type safety with Pydantic
+- Proper schema management
+- Connection pooling and cleanup
+- Thread-safe operations
+- Comprehensive logging and error handling
+
+Let me know if you need any modifications to better match your specific Oracle environment!

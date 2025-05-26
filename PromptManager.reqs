@@ -134,3 +134,18 @@ Based on the PromptWizard framework detailed in the paper "PromptWizard: Task-Aw
 This structured approach ensures that the Prompt Manager aligns with the capabilities of PromptWizard, facilitating efficient prompt optimization and management for Transaction Managers.
 
 [1]: https://raw.githubusercontent.com/microsoft/PromptWizard/main/RESPONSIBLE_AI.md?utm_source=chatgpt.com "https://raw.githubusercontent.com/microsoft/Prompt..."
+
+WITH input_codes AS (
+  SELECT unnest(ARRAY['at', 'to']) AS parameter_code
+),
+matched_ids AS (
+  SELECT p.id
+  FROM parameter p
+  JOIN input_codes i ON p.parameter_code = i.parameter_code
+  GROUP BY p.id
+  HAVING COUNT(*) = (SELECT COUNT(*) FROM input_codes)
+     AND COUNT(*) = (SELECT COUNT(*) FROM parameter p2 WHERE p2.id = p.id)
+)
+SELECT t.key
+FROM template t
+JOIN matched_ids m ON t.templateid = m.id;

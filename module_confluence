@@ -22,3 +22,9 @@ Create a Confluence page for the PromptWizard framework based on the provided Py
    - Include ideas for integrating with other tools, handling more complex tasks, or optimizing performance.
 
 Use clear and concise language, and include code snippets where appropriate. Ensure the content is well-organized and easy to follow for developers and technical users.
+
+Neo4j
+MATCH (n)
+WITH count(n) AS nodeCount
+MATCH ()-[r]->()
+RETURN nodeCount, count(r) AS relationshipCount;

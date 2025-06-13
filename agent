@@ -1,0 +1,149 @@
+src/
+├── models.py                 ✅ Pydantic schemas (updated)
+├── prompt.py                ✅ Prompt builders
+├── retriever.py             ✅ Retriever
+├── cache.py                 ✅ New: simple cache class
+├── reasoning_agent.py       ✅ Main reasoning agent with all 3 features
+
+Models.py
+from pydantic import BaseModel
+from typing import List, Optional
+
+
+class SubTask(BaseModel):
+    sub_question: str
+    context: Optional[str] = ""
+    reasoning: Optional[str] = ""
+    answer: Optional[str] = ""
+
+
+class TaskDecompositionOutput(BaseModel):
+    subtasks: List[SubTask]
+
+
+class FinalAnswer(BaseModel):
+    answer: str
+    steps: List[str]
+    subtasks: List[SubTask]
+
+cache.py
+class SimpleCache:
+    def __init__(self):
+        self.memory = {}
+
+    def get(self, key: str) -> str:
+        return self.memory.get(key)
+
+    def set(self, key: str, value: str):
+        self.memory[key] = value
+
+    def contains(self, key: str) -> bool:
+        return key in self.memory
+
+reasoning_agent.py
+from src.prompt import task_decomposition_prompt, build_reasoning_prompt
+from src.models import SubTask, FinalAnswer
+from src.oai import llama_3_3_70b_turbo
+from src.cache import SimpleCache
+from typing import Callable, AsyncIterator
+
+
+class ReasoningAgentWithDecomposition:
+    def __init__(self, retriever: Callable[[str], list[str]]):
+        self.retriever = retriever
+        self.cache = SimpleCache()
+
+    async def decompose(self, query: str) -> list[SubTask]:
+        prompt = task_decomposition_prompt(query)
+        cached = self.cache.get(prompt)
+        if cached:
+            lines = [line.strip("- ").strip() for line in cached.strip().splitlines()]
+        else:
+            response = await llama_3_3_70b_turbo(prompt)
+            lines = [line.strip("- ").strip() for line in response.strip().splitlines()]
+            self.cache.set(prompt, response)
+
+        return [SubTask(sub_question=line) for line in lines if line]
+
+    async def reason_subtask(self, task: SubTask) -> SubTask:
+        # Retrieve + cache
+        context = "\n\n".join(self.retriever(task.sub_question))
+        task.context = context
+
+        prompt = build_reasoning_prompt(context, task.sub_question)
+        if self.cache.contains(prompt):
+            reasoning = self.cache.get(prompt)
+        else:
+            reasoning = await llama_3_3_70b_turbo(prompt)
+            self.cache.set(prompt, reasoning)
+
+        task.reasoning = reasoning.strip()
+        task.answer = reasoning.strip().split("Answer:")[-1].strip() if "Answer:" in reasoning else reasoning.strip()
+        return task
+
+    async def synthesize(self, subtasks: list[SubTask], query: str) -> FinalAnswer:
+        synthesis_context = "\n\n".join(
+            [f"Sub-question: {t.sub_question}\nAnswer: {t.answer}" for t in subtasks]
+        )
+        prompt = f"""
+Use the following answers to the sub-questions to construct a final answer to the original query.
+
+Original Question: {query}
+
+Sub-Answers:
+{synthesis_context}
+
+Final Answer:
+"""
+        response = await llama_3_3_70b_turbo(prompt)
+        return FinalAnswer(
+            answer=response.strip(),
+            steps=[t.reasoning for t in subtasks],
+            subtasks=subtasks
+        )
+
+    async def run(self, query: str) -> FinalAnswer:
+        subtasks = await self.decompose(query)
+        solved = [await self.reason_subtask(t) for t in subtasks]
+        return await self.synthesize(solved, query)
+
+    async def run_streaming(self, query: str) -> AsyncIterator[str]:
+        yield f"💡 Decomposing: {query}\n"
+        subtasks = await self.decompose(query)
+
+        for i, task in enumerate(subtasks):
+            yield f"\n🔹 Sub-question {i + 1}: {task.sub_question}\n"
+            task = await self.reason_subtask(task)
+            yield f"Context:\n{task.context[:300]}...\n"
+            yield f"Reasoning:\n{task.reasoning}\n"
+
+        final = await self.synthesize(subtasks, query)
+        yield "\n🧠 Final Answer:\n" + final.answer
+
+main.py
+import asyncio
+from src.retriever import retrieve_relevant_chunks
+from src.reasoning_agent import ReasoningAgentWithDecomposition
+
+
+async def run_batch():
+    agent = ReasoningAgentWithDecomposition(retriever=retrieve_relevant_chunks)
+    query = "What obligations does the borrower have, and what happens if they breach financial covenants?"
+
+    # JSON output
+    result = await agent.run(query)
+    print("=== Final JSON ===")
+    print(result.json(indent=2))
+
+
+async def run_stream():
+    agent = ReasoningAgentWithDecomposition(retriever=retrieve_relevant_chunks)
+    query = "What are the roles of lender, agent, and collateral in a credit agreement?"
+
+    async for step in agent.run_streaming(query):
+        print(step)
+
+
+if __name__ == "__main__":
+    asyncio.run(run_batch())
+    # asyncio.run(run_stream())

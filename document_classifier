@@ -1,0 +1,135 @@
+# progressive_classifier.py
+
+import re
+import json
+import PyPDF2
+from typing import List, Tuple, Dict
+from collections import Counter, defaultdict
+from src.oai import llama_3_3_70b_turbo
+
+CATEGORY_MAP = {
+    "Financial Reporting": ["10-k", "10-q", "annual report", "quarterly report"],
+    "Legal Agreements": ["credit agreement", "loan agreement", "fee letter", "commitment letter", "guarantee", "pledge"],
+    "Risk Management": ["letter of credit", "surety bond", "insurance"],
+    "Credit Approval": ["borrowing base", "financial projections", "covenant compliance"],
+    "Collateral Documentation": ["ucc", "appraisal", "mortgage", "lien"],
+    "Regulatory & Compliance": ["kyc", "aml", "fr y-14", "ofac"],
+    "Supporting / Correspondence": ["board resolution", "memo", "legal opinion", "email"]
+}
+
+def extract_pages_text(pdf_path: str, start: int, end: int) -> str:
+    with open(pdf_path, "rb") as file:
+        reader = PyPDF2.PdfReader(file)
+        total_pages = len(reader.pages)
+        end = min(end, total_pages)
+        return " ".join(reader.pages[i].extract_text() or "" for i in range(start, end)).lower()
+
+def build_initial_classification_prompt(initial_text: str) -> str:
+    return f"""
+You are a financial document classification expert.
+
+Analyze the following document excerpt and determine the most likely category and subcategory. This excerpt is from the first few pages of the document.
+
+Categories to choose from:
+- Financial Reporting
+- Legal Agreements
+- Risk Management
+- Credit Approval
+- Collateral Documentation
+- Regulatory & Compliance
+- Supporting / Correspondence
+
+Excerpt:
+"""{initial_text[:4000]}"""
+
+Respond in JSON:
+{{
+  "category": "<best category>",
+  "subcategory": "<keyword or phrase from document>",
+  "justification": "<why you chose this category>"
+}}
+"""
+
+def build_chunk_classification_prompt(prev_summary: str, chunk_text: str, chunk_num: int) -> str:
+    return f"""
+You are continuing the classification of a financial document using a progressive strategy.
+
+You previously classified the document as:
+{prev_summary}
+
+Now analyze the next chunk (Chunk {chunk_num}) and determine whether this chunk:
+1. Supports the previous classification
+2. Introduces a new classification
+3. Is irrelevant or inconclusive
+
+Chunk {chunk_num}:
+"""{chunk_text[:3000]}"""
+
+Respond in JSON:
+{{
+  "chunk_number": {chunk_num},
+  "chunk_classification": "<category or 'inconclusive'>",
+  "is_consistent_with_initial": true/false,
+  "confidence": 0.0 to 1.0,
+  "new_keywords": ["<if any>"],
+  "justification": "<reasoning>",
+  "refined_category": "<refined suggestion, or same>"
+}}
+"""
+
+async def classify_progressively(pdf_path: str, summary_pages=5, chunk_size=10):
+    reader = PyPDF2.PdfReader(pdf_path)
+    total_pages = len(reader.pages)
+
+    summary_text = extract_pages_text(pdf_path, 0, summary_pages)
+    init_prompt = build_initial_classification_prompt(summary_text)
+    init_response = await llama_3_3_70b_turbo(init_prompt)
+    init_json = json.loads(init_response)
+
+    result = {
+        "initial_summary": init_json,
+        "refined_category": init_json["category"],
+        "chunks": []
+    }
+
+    for i, start in enumerate(range(summary_pages, total_pages, chunk_size), 1):
+        chunk_text = extract_pages_text(pdf_path, start, start + chunk_size)
+        chunk_prompt = build_chunk_classification_prompt(json.dumps(init_json, indent=2), chunk_text, i)
+        chunk_response = await llama_3_3_70b_turbo(chunk_prompt)
+
+        try:
+            chunk_data = json.loads(chunk_response)
+            result["chunks"].append(chunk_data)
+        except Exception:
+            result["chunks"].append({
+                "chunk_number": i,
+                "error": "Failed to parse LLM response",
+                "raw": chunk_response
+            })
+
+    category_scores = defaultdict(float)
+    category_counts = defaultdict(int)
+    consistent_count = 0
+    total_chunks = len(result["chunks"])
+
+    for chunk in result["chunks"]:
+        if "chunk_classification" in chunk and chunk["chunk_classification"] != "inconclusive":
+            category = chunk["chunk_classification"]
+            score = chunk.get("confidence", 1.0)
+            category_scores[category] += score
+            category_counts[category] += 1
+            if chunk.get("is_consistent_with_initial"):
+                consistent_count += 1
+
+    if category_scores:
+        final_category = max(category_scores.items(), key=lambda x: x[1])[0]
+    else:
+        final_category = "Unknown"
+
+    result["refined_category"] = final_category
+    result["category_votes"] = dict(category_counts)
+    result["confidence_score"] = round(consistent_count / total_chunks, 3) if total_chunks > 0 else 0.0
+    result["refined_subcategory"] = result["initial_summary"].get("subcategory") \
+        if result["refined_category"] == result["initial_summary"]["category"] else "Mixed"
+
+    return result

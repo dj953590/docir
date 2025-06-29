@@ -1,0 +1,128 @@
+# summarizer.py
+
+import json
+import PyPDF2
+from src.oai import llama_3_3_70b_turbo
+from .progressive_classifier import extract_pages_text, build_summary_prompt
+
+async def summarize_progressively(pdf_path: str, summary_pages: int = 5, chunk_size: int = 10) -> str:
+    reader = PyPDF2.PdfReader(pdf_path)
+    total_pages = len(reader.pages)
+
+    progressive_summary = ""
+
+    # First summary block from the first N pages
+    initial_text = extract_pages_text(pdf_path, 0, summary_pages)
+    summary_prompt = build_summary_prompt("", initial_text, 0)
+    summary_response = await llama_3_3_70b_turbo(summary_prompt)
+    extraction_prompt = build_data_extraction_prompt(initial_text, 0)
+    extraction_response = await llama_3_3_70b_turbo(extraction_prompt)
+    
+    summary_block = preserve_tables_and_update(summary_response.strip())
+    summary_block += f"\n\n### Extracted Data Elements (Chunk 0)\n{extraction_response.strip()}\n"
+    progressive_summary += f"\n\n## Summary Block 0\n{summary_block}"
+
+    # Progressively summarize each chunk
+    for i, start in enumerate(range(summary_pages, total_pages, chunk_size), 1):
+        chunk_text = extract_pages_text(pdf_path, start, start + chunk_size)
+
+        summary_prompt = build_summary_prompt(progressive_summary, chunk_text, i)
+        summary_response = await llama_3_3_70b_turbo(summary_prompt)
+
+        extraction_prompt = build_data_extraction_prompt(chunk_text, i)
+        extraction_response = await llama_3_3_70b_turbo(extraction_prompt)
+
+        summary_block = preserve_tables_and_update(summary_response.strip())
+        summary_block += f"\n\n### Extracted Data Elements (Chunk {i})\n{extraction_response.strip()}\n"
+
+        progressive_summary += f"\n\n## Summary Block {i}\n{summary_block}"
+
+    return progressive_summary
+
+
+def preserve_tables_and_update(text: str) -> str:
+    # Preserve markdown tables explicitly if present
+    table_sections = []
+    current_table = []
+    in_table = False
+    lines = text.splitlines()
+
+    for line in lines:
+        if '|' in line and ('---' in line or '---' in line):
+            in_table = True
+        if in_table:
+            current_table.append(line)
+            if line.strip() == '':
+                table_sections.append('\n'.join(current_table))
+                current_table = []
+                in_table = False
+
+    clean_text = text.strip()
+    if table_sections:
+        clean_text += "\n\n# Preserved Tables\n" + "\n\n".join(table_sections)
+
+    return clean_text
+
+
+def build_data_extraction_prompt(chunk_text: str, chunk_num: int) -> str:
+    return f"""
+You are assisting a transaction manager to extract key credit agreement data from document text.
+Identify and return the following fields if available, based on the chunk {chunk_num}:
+
+Fields to extract:
+- Borrower(s)
+- Lender(s)
+- Administrative Agent
+- Loan Amount or Commitments
+- Facility Type(s)
+- Interest Rate Terms
+- Maturity Date
+- Collateral / Security Description
+- Guarantor(s)
+- Key Covenant(s)
+- Governing Law
+- Effective Date / Agreement Date
+
+Chunk Text:
+"""
+{chunk_text[:3000]}
+"""
+
+Respond in structured JSON with only the fields you can confidently identify.
+Example:
+{{
+  "Borrower": "ABC Corp.",
+  "Lender": ["XYZ Bank", "QRS Bank"],
+  "Loan Amount": "$500,000,000",
+  "Facility Type": "Revolving Credit Facility"
+}}
+"""
+  
+def build_summary_prompt(existing_summary: str, new_text: str, chunk_num: int) -> str:
+    return f"""
+You are a document summarization assistant working for a banking and credit underwriting team. Your summary should support:
+- Underwriters evaluating credit structure and risk
+- Bankers understanding deal terms and client relationships
+- Transaction managers identifying data elements needed for regulatory reporting (e.g., for FR Y-14Q, CECL)
+
+Below is the current summary:
+"""
+{existing_summary}
+"""
+
+Now read the next chunk (Chunk {chunk_num}) and revise the summary with the following goals:
+- Keep all critical financial, legal, and structural details
+- Retain or build any important tables found in the text
+- Use clear bullets, structured prose, or section summaries
+- Make it useful for downstream data extraction (e.g., parties, facilities, covenants, guarantees)
+
+Chunk {chunk_num}:
+"""
+{new_text[:3000]}
+"""
+
+Respond with an updated, cumulative summary:
+"""
+<new comprehensive and structured summary>
+"""
+"""

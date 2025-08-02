@@ -652,3 +652,34 @@ def extract_text_from_image(image_path: str, model: str = "llama-4.0-scout-instr
 
     markdown_output = response.choices[0].message["content"]
     return markdown_output
+
+## for Onnx
+
+from onnxtr.models import ocr_predictor, fast_base, vitstr_base
+from onnxtr.io.elements import Document as OnnxtrDocument
+
+from pathlib2 import Path
+
+doc_name = "citibank-caterpillar"
+
+fast_base_onnx = (
+        Path(__file__).parent.parent.parent.parent.parent / 'models' / 'fast_base.onnx'
+)  # Replace with your PDF file path
+
+vitstr_base_onnx = (
+        Path(__file__).parent.parent.parent.parent.parent / 'models' / 'vitstr_base.onnx'
+)  # Replace with your PDF file path
+model_fast_onnx = fast_base(str(fast_base_onnx))
+model_vitstr_onnx = vitstr_base(str(vitstr_base_onnx))
+
+
+
+pix.save(image_filename)
+            img = DocumentFile.from_images([image_filename])
+            predictor = ocr_predictor(
+                det_arch=model_fast_onnx,
+                reco_arch=model_vitstr_onnx,
+            )
+            data: OnnxtrDocument = predictor(img)
+            data_str: str = data.render() #ocr_to_markdown(data)
+            return data_str

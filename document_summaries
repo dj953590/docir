@@ -126,3 +126,64 @@ Respond with an updated, cumulative summary:
 <new comprehensive and structured summary>
 """
 """
+
+
+# python
+import re
+from typing import Any, Dict
+
+_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+def escape_cypher_node(label: str) -> str:
+    """
+    Return a safe Cypher label/identifier:
+    - If `label` is a simple identifier, return it unchanged.
+    - Otherwise wrap in backticks and double internal backticks.
+    """
+    s = str(label).strip()
+    if _IDENT_RE.match(s):
+        return s
+    return f"`{s.replace('`', '``')}`"
+
+def escape_cypher_properties(properties: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively escape string property values for Cypher by doubling single quotes.
+    Do NOT add surrounding quotes here; callers that render values into query text
+    should add quotes or (preferably) use parameters.
+    """
+    def _esc(v):
+        if isinstance(v, str):
+            return v.strip().replace("'", "''")
+        if isinstance(v, dict):
+            return {k: _esc(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [_esc(val) for val in v]
+        return v
+
+    return {k: _esc(v) for k, v in properties.items()}
+
+def render_properties_to_cypher(properties: Dict[str, Any]) -> str:
+    """
+    Render a property map to a Cypher literal string (e.g. {name: 'O''Reilly', age: 42}).
+    Use only when you must inline values; parameterized queries are safer.
+    """
+    def render_val(v):
+        if isinstance(v, str):
+            return f"'{v.replace(\"'\",\"''\")}'"
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if v is None:
+            return "null"
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, list):
+            return "[" + ", ".join(render_val(x) for x in v) + "]"
+        if isinstance(v, dict):
+            return "{" + ", ".join(f"{rk}: {render_val(rv)}" for rk, rv in v.items()) + "}"
+        return f"'{str(v).replace(\"'\",\"''\")}'"
+
+    parts = []
+    for k, v in properties.items():
+        key = k if _IDENT_RE.match(k) else f"`{k.replace('`','``')}`"
+        parts.append(f"{key}: {render_val(v)}")
+    return "{" + ", ".join(parts) + "}"
